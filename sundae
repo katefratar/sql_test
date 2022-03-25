@@ -1,0 +1,283 @@
+/* Question 1
+*/
+
+select a.first_name, a.last_name, count(distinct f.film_id) total_films
+from film f
+join film_actor fa on fa.film_id = f.film_id
+join actor a on a.actor_id = fa.actor_id
+group by a.actor_id
+order by total_films desc
+limit 100;
+
+
+/* Question 2
+*/
+
+select c.name category_name, count(distinct f.film_id) total_films
+from film f
+join film_category fc on fc.film_id = f.film_id
+join category c on c.category_id = fc.category_id
+where c.name not in ('Sports','Games')
+group by c.name
+order by total_films desc;
+
+/* Question 3
+*/
+ 
+/*Question says to use table Address but I don’t see anything else in the question that indicates a need to reference this table 
+(Write a query we can use to plot the total (1) number of rentals, (2) revenue from rentals, (3) number of individuals that rented movies in each of the last 12 weeks
+(assume the most recent week was the week with the most recent rental). Exclude your results to only include rentals from store_id 1.)
+*/
+
+with max_week as (
+select date_part('week',max(rental_ts)) max_week
+from rental
+)
+
+, weeks as (
+select distinct date_part('week',date) week 
+from dates d
+cross join max_week md
+where date_part('week',date) <= max_week and date_part('week',date) > max_week - 12
+order by week desc
+)
+
+, rental_info as (
+select date_part('week',rental_ts) week, count(distinct r.rental_id) number_of_rentals
+, sum(amount) rental_revenue, count(distinct r.customer_id) number_of_individuals
+from rental r
+left join inventory i on i.inventory_id = r.inventory_id
+left join payment p on p.rental_id = r.rental_id
+where store_id = 1
+group by week
+)
+
+select w.week, coalesce(number_of_rentals,0) number_of_rentals, coalesce(rental_revenue,0) rental_revenue, coalesce(number_of_individuals,0) number_of_individuals
+from weeks w
+left join rental_info ri on ri.week = w.week
+order by week desc;
+
+
+/* Question 4
+*/
+
+/*trying to use the table Country gave me a Bad Request - permission denied, so I had to determine from the cities in table City that the country_id for US was 103 
+(based on the question says that the field to is # of active US customers)
+*/
+
+with july as (
+select distinct c.customer_id
+from rental r
+join inventory i on i.inventory_id = r.inventory_id
+join film f on f.film_id = i.film_id
+join customer c on c.customer_id = r.customer_id
+join address a on a.address_id = c.address_id
+join city ci on ci.city_id = a.city_id
+where c.active = 1
+and f.rating = 'PG'
+and ci.city <> 'Dallas'
+and country_id = 103
+and rental_ts > '2020-07-31'::date - interval '15 day'
+and rental_ts < '2020-08-01'
+group by c.customer_id
+having count(c.customer_id) > 1
+)
+
+, august as (
+select distinct c.customer_id
+from rental r
+join inventory i on i.inventory_id = r.inventory_id
+join film f on f.film_id = i.film_id
+join customer c on c.customer_id = r.customer_id
+join address a on a.address_id = c.address_id
+join city ci on ci.city_id = a.city_id
+where c.active = 1
+and f.rating = 'PG'
+and ci.city <> 'Dallas'
+and country_id = 103
+and rental_ts > '2020-08-31'::date - interval '15 day'
+and rental_ts < '2020-09-01'
+group by c.customer_id
+having count(c.customer_id) > 1
+)
+
+select count(j.customer_id) as active_us_customers
+from july j
+join august a on a.customer_id = j.customer_id;
+
+/* Question 5
+*/
+
+/*this question confused me a bit as based on the tables the question says to use, it seems like rental_rate in table film is the field that should be used 
+to calculate the rolling average; however, this field looks like it is the price of a rental, and the way the question is phrased seems like we are looking 
+for the quantity of rentals. I've calculated both the rental_rate indicative of price (assuming that is what the field in table film represents) based on 
+the tables specified to use, and the rental_rate indicative of frequency based on the question talking about rentals being concentrated on certain calendar 
+days (the answer I think this should be).
+*/
+
+--using rental_rate in table film (price of rental)
+with days as (
+select date_part('day',date) august_day
+from dates
+where date between '2020-08-01' and '2020-08-31'
+)
+
+, rental_rate as (
+select date_part('day',r.rental_ts) rental_day, f.rental_rate
+from rental r
+join inventory i on i.inventory_id = r.inventory_id
+join film f on f.film_id = i.film_id
+where r.rental_ts between '2020-08-01' and '2020-08-31'
+)
+
+, rate_by_day as (
+select august_day, coalesce(avg(r.rental_rate),0) rental_rate
+from days d
+left join rental_rate r on r.rental_day = august_day
+group by august_day
+)
+
+select august_day as day
+, round(avg(rental_rate) over(order by august_day rows between 6 preceding and current row),2) avg_rental_rate
+from rate_by_day
+order by august_day;
+
+
+--measure of quantity of rentals, using count of rentals (not the field rental_rate)
+with days as (
+select date_part('day',date) august_day
+from dates
+where date between '2020-08-01' and '2020-08-31'
+)
+
+, rental_rate as (
+select date_part('day',r.rental_ts) rental_day, count(distinct r.rental_id) rental_count
+from rental r
+where r.rental_ts between '2020-08-01' and '2020-08-31'
+group by date_part('day',r.rental_ts)
+)
+
+, rate_by_day as (
+select august_day, coalesce(avg(r.rental_count),0) rental_rate
+from days d
+left join rental_rate r on r.rental_day = august_day
+group by august_day
+)
+
+select august_day as day
+, round(avg(rental_rate) over(order by august_day rows between 6 preceding and current row),0) avg_rental_rate
+from rate_by_day
+order by august_day;
+
+/* Bonus/Optional Question
+*/
+
+*/I played around with the data and am including a few of my queries below as representations of the kinds of trends and insights 
+I attempted to glean from the data to offer suggestions.
+*/
+
+*/1. I looked at the number of rentals, rental revenue, and average rental price for each film category. The three categories with the lowest 
+number of rentals (Music, Travel, and Horror), all have average rental prices higher than the five categories with the highest number of rentals. 
+The stores may want to consider playing with price elasticity here and see if lowering the rental prices on these three under-performing categories 
+increases sales, or the number of rentals, thereby generating an increase in rental revenue. There are some other categories with low prices 
+(or rental rates) where the stores could consider raising the price to generate additional revenue (although this would likely not increase sales). 
+I would start with Children and Classics here as these pose lower risk vs. Action and Documentary.
+*/
+
+select c.name category_name, count(distinct r.rental_id) num_rentals, sum(amount) rental_revenue
+, round(avg(rental_rate),2) avg_rental_price
+from rental r
+join inventory i on i.inventory_id = r.inventory_id
+join film f on f.film_id = i.film_id
+join film_category fc on fc.film_id = f.film_id
+join category c on c.category_id = fc.category_id
+join payment p on p.rental_id = r.rental_id
+group by c.name
+order by num_rentals desc;
+
+/*2. Looking at the number of rentals over time at first glance indicates that July and August are busy months; however, there isn’t really 
+enough information here to confirm that. The only months we have data for are Feb, May, Jun, Jul, and Aug, with each month seeing an increase 
+in rentals over the month before. Perhaps the stores were new at the beginning of the year and are displaying normal growth; maybe there were
+times the stores were closed; maybe there is missing data, or some other information we don’t know. Without more data here, it’s not fair to 
+draw conclusions on rentals over time.
+*/
+
+select month rental_month, year rental_year
+, count(distinct rental_id) num_rentals
+from rental r
+join dates d on d.date = cast(r.rental_ts as date)
+group by month, year;
+
+
+/*3. Rental revenue by rating shows that G rated films generate the least amount of revenue.
+*/
+
+select rating, count(distinct r.rental_id) num_rentals, sum(amount) rental_revenue, round(avg(rental_rate),2) avg_rental_price
+from rental r
+join inventory i on i.inventory_id = r.inventory_id
+join film f on f.film_id = i.film_id
+join film_category fc on fc.film_id = f.film_id
+join category c on c.category_id = fc.category_id
+join payment p on p.rental_id = r.rental_id
+group by rating
+order by rental_revenue desc;
+
+/*If we then look at the category names of G rated films, one thing that stands out is that Children and Family are not high on the list, as they may be expected to be.
+*/
+
+select rating, name category_name, count(distinct r.rental_id) num_rentals, sum(amount) rental_revenue
+from rental r
+join inventory i on i.inventory_id = r.inventory_id
+join film f on f.film_id = i.film_id
+join film_category fc on fc.film_id = f.film_id
+join category c on c.category_id = fc.category_id
+join payment p on p.rental_id = r.rental_id
+where rating = 'G'
+group by rating, name
+order by rental_revenue desc;
+
+/*Taking this further, I looked at the Children and Family categories specifically, and the number of rentals, rental revenue, and average rental price by rating 
+for each. Interestingly, within these categories, the G rated films have higher average rental prices than the rest of the ratings (this higher average price was 
+not reflected for G rated films overall in the first query). This may be contributing to the lower revenue here if the price point is too high and stunting sales
+for these categories of G rated films. Or, perhaps there isn’t enough inventory of G rated films in these categories and the stores could increase sales by
+increasing their selection of G rated films for these categories (there could be other factors that can’t be determined with the limitations of data here). 
+*/
+
+select name category_name, rating, count(distinct r.rental_id) num_rentals, sum(amount) rental_revenue, round(avg(rental_rate),2) avg_rental_price
+from rental r
+join inventory i on i.inventory_id = r.inventory_id
+join film f on f.film_id = i.film_id
+join film_category fc on fc.film_id = f.film_id
+join category c on c.category_id = fc.category_id
+join payment p on p.rental_id = r.rental_id
+where name in ('Children','Family')
+group by name, rating
+order by name, rental_revenue desc;
+
+/*4. One suggestion for acquiring more customers is to introduce films in other languages. Running this query shows that all rentals are in 
+one (the same) language. Joining to the table language gives a bad request - permission denied error, but let’s assume here that that language is English.
+*/
+
+select language_id, original_language_id, count(distinct rental_id) num_rentals
+from rental r
+join inventory i on i.inventory_id = r.inventory_id
+join film f on f.film_id = i.film_id
+group by language_id, original_language_id;
+
+
+/* Running the next query shows that despite film rentals only being available in one language, customers from over 100 different countries are renting. 
+Joining to table country gives a bad request - permission error, so I had to determine the counties for each country_id by looking at the city names 
+in table city, but the top two countries with the most rentals are India and China, followed by the US, then Japan and Mexico. Adding films in the native 
+language of these other countries aside from the US could further strengthen these markets by bringing in additional customers; alternatively, perhaps 
+films in languages native to countries without a lot of rentals could be added to address these under-served markets.
+*/
+
+select country_id, count(distinct rental_id) num_rentals
+from rental r
+join customer c on c.customer_id = r.customer_id
+join address a on a.address_id = c.address_id
+join city ci on ci.city_id = a.city_id
+group by country_id
+order by num_rentals desc; 
+
+
